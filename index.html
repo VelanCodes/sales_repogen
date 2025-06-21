@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detailed Sales GST Report (Sorted by Date)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .table-container { overflow-x: auto; }
+        th, td { white-space: nowrap; padding: 0.5rem 0.75rem; /* py-2 px-3 */ }
+        thead th { padding-top: 0.75rem; padding-bottom: 0.75rem; /* py-3 */ }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 flex items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-full bg-white rounded-xl shadow-lg p-6 md:p-8">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-900">Detailed Sales GST Report</h1>
+            <p class="text-gray-600 mt-2">Sorted by Date. One row per order with GST slab breakdowns.</p>
+        </div>
+
+        <div id="upload-container" class="mb-6 p-6 border-2 border-dashed border-gray-300 rounded-lg text-center cursor-pointer hover:border-blue-500 transition-colors">
+            <input type="file" id="file-input" accept=".csv, .xlsx, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel" class="hidden">
+            <label for="file-input" class="cursor-pointer">
+                <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48"><path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                <p class="mt-2 text-lg font-medium text-blue-600">Click to upload Sales Data</p>
+                <p class="mt-1 text-sm text-gray-500">or drag and drop CSV/XLSX</p>
+            </label>
+        </div>
+
+        <div id="message-container" class="text-center my-4" aria-live="polite"></div>
+
+        <div id="results-container" class="hidden mt-8">
+            <h2 class="text-2xl font-semibold mb-4 text-center">Generated Sales Report</h2>
+            <div class="table-container border border-gray-200 rounded-lg">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr id="results-header"></tr>
+                    </thead>
+                    <tbody id="results-body" class="bg-white divide-y divide-gray-200"></tbody>
+                    <tfoot id="results-footer" class="bg-gray-50 font-bold"></tfoot>
+                </table>
+            </div>
+        </div>
+
+        <div class="text-center mt-6">
+            <button id="download-button" class="hidden bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded transition-colors">
+                Download Sales Report (XLSX)
+            </button>
+        </div>
+
+        <div class="mt-6 text-sm text-gray-500 bg-gray-50 p-4 rounded-lg">
+            <h4 class="font-semibold text-gray-700">Required Columns (Sales Data):</h4>
+            <p>
+                <code class="bg-gray-200 px-1 rounded">'Order #'</code>,
+                <code class="bg-gray-200 px-1 rounded">'Date'</code>,
+                <code class="bg-gray-200 px-1 rounded">'Patient Name'</code>,
+                <code class="bg-gray-200 px-1 rounded">'Total(MRP (excl.Tax))'</code> (as taxable amount),
+                <code class="bg-gray-200 px-1 rounded">'CGST(%)'</code>,
+                <code class="bg-gray-200 px-1 rounded">'SGST(%)'</code>.
+            </p>
+            <p class="mt-1">Optional:
+                <code class="bg-gray-200 px-1 rounded">'IGST(%)'</code>,
+                <code class="bg-gray-200 px-1 rounded">'CGST(#)'</code>,
+                <code class="bg-gray-200 px-1 rounded">'SGST(#)'</code>,
+                <code class="bg-gray-200 px-1 rounded">'IGST(#)'</code>.
+                A column for Customer GSTIN can be used if present (e.g., 'Customer GSTIN').
+            </p>
+        </div>
+    </div>
+
+    <script>
+        const getElem = id => document.getElementById(id);
+        const uploadContainer = getElem('upload-container'), fileInput = getElem('file-input'),
+              resultsContainer = getElem('results-container'), resultsHeader = getElem('results-header'),
+              resultsBody = getElem('results-body'), resultsFooter = getElem('results-footer'),
+              messageContainer = getElem('message-container'), downloadButton = getElem('download-button');
+        let exportableData = [];
+
+        const gstSlabs = [
+            { totalRate: 0,  cgstRate: 0,   sgstRate: 0,   igstRate: 0,   label: "0" },
+            { totalRate: 5,  cgstRate: 2.5, sgstRate: 2.5, igstRate: 5,   label: "5" },
+            { totalRate: 12, cgstRate: 6,   sgstRate: 6,   igstRate: 12,  label: "12" },
+            { totalRate: 18, cgstRate: 9,   sgstRate: 9,   igstRate: 18,  label: "18" },
+            { totalRate: 28, cgstRate: 14,  sgstRate: 14,  igstRate: 28,  label: "28" }
+        ];
+
+        const handleFileSelect = file => {
+            if (!file) return;
+            [resultsContainer, downloadButton].forEach(el => el.classList.add('hidden'));
+            exportableData = []; messageContainer.innerHTML = '';
+            const isCsv = file.type === 'text/csv' || file.name.toLowerCase().endsWith('.csv');
+            const isXlsx = file.type.includes('spreadsheetml.sheet') || file.name.toLowerCase().endsWith('.xlsx');
+            if (isCsv) { showMsg('Processing CSV...', 'blue'); parseCSV(file); }
+            else if (isXlsx) { showMsg('Processing XLSX...', 'blue'); parseXLSX(file); }
+            else { showMsg('Invalid file type. Please upload CSV or XLSX.', 'red'); }
+        };
+        uploadContainer.onclick = () => fileInput.click();
+        fileInput.onchange = e => { if (e.target.files.length) handleFileSelect(e.target.files[0]); e.target.value = null; };
+        ['dragover', 'dragleave', 'drop'].forEach(evt => uploadContainer.addEventListener(evt, e => {
+            e.preventDefault(); e.stopPropagation();
+            uploadContainer.classList.toggle('border-blue-500', evt === 'dragover');
+            uploadContainer.classList.toggle('bg-blue-50', evt === 'dragover');
+            if (evt === 'drop' && e.dataTransfer.files.length) handleFileSelect(e.dataTransfer.files[0]);
+        }));
+        const showMsg = (msg, color) => {
+             const colorClass = color === 'red' ? 'text-red-600' : (color === 'green' ? 'text-green-600' : 'text-blue-600');
+             messageContainer.innerHTML = `<p class="${colorClass} font-medium">${msg}</p>`;
+        };
+        
+        function parseCSV(file) {
+            Papa.parse(file, {
+                header: true,
+                skipEmptyLines: true,
+                complete: function(results) {
+                    if (results.errors.length > 0) {
+                        showMsg(`CSV Error: ${results.errors[0].message}. Check file format.`, 'red');
+                        console.error("CSV Errors:", results.errors); return;
+                    }
+                    if (!results.data || results.data.length === 0) {
+                        showMsg('CSV file is empty or unreadable.', 'red'); return;
+                    }
+                    processData(results.data);
+                },
+                error: function(error) {
+                    showMsg(`CSV Parse Error: ${error.message}`, 'red'); console.error(error);
+                }
+            });
+        }
+
+        function parseXLSX(file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const workbook = XLSX.read(new Uint8Array(e.target.result), {type: 'array', cellDates: true}); 
+                    const firstSheetName = workbook.SheetNames[0];
+                    if (!firstSheetName) { showMsg('XLSX: No sheets found.', 'red'); return; }
+                    const worksheet = workbook.Sheets[firstSheetName];
+                    const jsonData = XLSX.utils.sheet_to_json(worksheet, {raw: false, defval: null}); 
+                    if (!jsonData || jsonData.length === 0) {
+                        showMsg('XLSX sheet is empty or unreadable.', 'red'); return;
+                    }
+                    processData(jsonData);
+                } catch (error) {
+                    showMsg(`XLSX Parse Error: ${error.message || error}`, 'red'); console.error(error);
+                }
+            };
+            reader.onerror = function(error) {
+                showMsg(`File Read Error: ${error.message || error}`, 'red'); console.error(error);
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function parseDate(dateStrOrObj) {
+            if (dateStrOrObj instanceof Date && !isNaN(dateStrOrObj)) {
+                return dateStrOrObj;
+            }
+            if (typeof dateStrOrObj !== 'string' && typeof dateStrOrObj !== 'number') return null; 
+
+            if (typeof dateStrOrObj === 'number') { 
+                const excelEpoch = new Date(Date.UTC(1899, 11, 30)); 
+                const jsDate = new Date(excelEpoch.getTime() + (dateStrOrObj -1) * 24 * 60 * 60 * 1000); 
+                if (jsDate && !isNaN(jsDate)) return jsDate;
+            }
+            
+            if (typeof dateStrOrObj !== 'string') return null;
+
+            const datePartsRegex = [
+                /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/, 
+                /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/, 
+                /^(\d{1,2})-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(\d{2,4})$/i 
+            ];
+            const monthMap = {"jan":0,"feb":1,"mar":2,"apr":3,"may":4,"jun":5,"jul":6,"aug":7,"sep":8,"oct":9,"nov":10,"dec":11};
+
+            for (const regex of datePartsRegex) {
+                const parts = dateStrOrObj.match(regex);
+                if (parts) {
+                    let day, month, year;
+                    if (regex === datePartsRegex[0]) { 
+                        day = parseInt(parts[1]); month = parseInt(parts[2]);
+                        year = parseInt(parts[3]); if (year < 100) year += 2000; 
+                    } else if (regex === datePartsRegex[1]) { 
+                        year = parseInt(parts[1]); month = parseInt(parts[2]); day = parseInt(parts[3]);
+                    } else if (regex === datePartsRegex[2]) { 
+                        day = parseInt(parts[1]); month = monthMap[parts[2].toLowerCase()] + 1; 
+                        year = parseInt(parts[3]); if (year < 100) year += 2000;
+                    }
+                    if (year && month && day) {
+                        const date = new Date(Date.UTC(year, month - 1, day));
+                        if (!isNaN(date)) return date;
+                    }
+                }
+            }
+            const directParse = new Date(dateStrOrObj); 
+            return (directParse && !isNaN(directParse)) ? directParse : null;
+        }
+
+        function processData(data) {
+            const C = { 
+                ORDER_NO: 'Order #',
+                ORDER_DATE: 'Date',
+                CUSTOMER_NAME: 'Patient Name',
+                CUSTOMER_GSTIN: 'Customer GSTIN', // Keep as a placeholder for now or remove if not used
+                TAXABLE: 'Total(MRP (excl.Tax))', // *** UPDATED BASED ON YOUR INFO ***
+                CGST_P: 'CGST(%)',
+                SGST_P: 'SGST(%)',
+                IGST_P: 'IGST(%)',               
+                CGST_A: 'CGST(#)',
+                SGST_A: 'SGST(#)',
+                IGST_A: 'IGST(#)'                
+            };
+
+            const requiredCols = [C.ORDER_NO, C.ORDER_DATE, C.CUSTOMER_NAME, C.TAXABLE, C.CGST_P, C.SGST_P];
+            if (!data[0] || !requiredCols.every(col => col in data[0])) {
+                const missing = data[0] ? requiredCols.filter(col => !(col in data[0])) : requiredCols;
+                showMsg(`Missing sales data columns: ${missing.join(', ')}. Found: ${data[0] ? Object.keys(data[0]).join(', ') : 'No cols'}`, 'red');
+                return;
+            }
+
+            const ordersData = {};
+
+            data.forEach(row => {
+                const orderNo = String(row[C.ORDER_NO] || '').trim();
+                if (!orderNo) return;
+
+                const parsedOrderDate = parseDate(row[C.ORDER_DATE]);
+                
+                if (!ordersData[orderNo]) {
+                    ordersData[orderNo] = {
+                        orderDateObj: parsedOrderDate, 
+                        orderDateStr: String(row[C.ORDER_DATE] || ''), 
+                        customerName: row[C.CUSTOMER_NAME],
+                        customerGstin: (C.CUSTOMER_GSTIN in row ? row[C.CUSTOMER_GSTIN] : '') || '', 
+                        totalTaxableAmount: 0,
+                        totalGstAmount: 0,
+                        slabs: {} 
+                    };
+                    gstSlabs.forEach(slab => {
+                        ordersData[orderNo].slabs[slab.label] = { taxable: 0, cgstA: 0, sgstA: 0, igstA: 0 };
+                    });
+                }
+
+                const currentOrder = ordersData[orderNo];
+                const taxable = parseFloat(row[C.TAXABLE] || 0);
+                if (isNaN(taxable)) return;
+
+                currentOrder.totalTaxableAmount += taxable;
+
+                const itemCgstP = parseFloat(String(row[C.CGST_P] || '0').replace('%', ''));
+                const itemSgstP = parseFloat(String(row[C.SGST_P] || '0').replace('%', ''));
+                const itemIgstP = (C.IGST_P in row && row[C.IGST_P]) ? parseFloat(String(row[C.IGST_P]).replace('%', '')) : 0;
+
+                let itemCgstA = parseFloat(row[C.CGST_A] || NaN);
+                let itemSgstA = parseFloat(row[C.SGST_A] || NaN);
+                let itemIgstA = (C.IGST_A in row && row[C.IGST_A]) ? parseFloat(row[C.IGST_A] || NaN) : NaN;
+
+                let itemTotalGstAmount = 0;
+                let actualItemCgstA = 0, actualItemSgstA = 0, actualItemIgstA = 0;
+                let isIgstItem = itemIgstP > 0;
+
+                if (isIgstItem) {
+                    actualItemIgstA = !isNaN(itemIgstA) ? itemIgstA : (taxable * itemIgstP) / 100;
+                    itemTotalGstAmount = actualItemIgstA;
+                } else {
+                    actualItemCgstA = !isNaN(itemCgstA) ? itemCgstA : (taxable * itemCgstP) / 100;
+                    actualItemSgstA = !isNaN(itemSgstA) ? itemSgstA : (taxable * itemSgstP) / 100;
+                    itemTotalGstAmount = actualItemCgstA + actualItemSgstA;
+                }
+                currentOrder.totalGstAmount += itemTotalGstAmount;
+                const itemTotalRate = Math.round(itemCgstP + itemSgstP + itemIgstP);
+                
+                let matchedSlab = gstSlabs.find(s => s.totalRate === itemTotalRate);
+                if (matchedSlab) {
+                    const slabData = currentOrder.slabs[matchedSlab.label];
+                    slabData.taxable += taxable;
+                    if (isIgstItem) slabData.igstA += actualItemIgstA;
+                    else { slabData.cgstA += actualItemCgstA; slabData.sgstA += actualItemSgstA; }
+                } else {
+                     console.warn(`Item rate ${itemTotalRate}% (Order ${orderNo}) not in slabs. GST added to total but not slab.`);
+                }
+            });
+            
+            if (Object.keys(ordersData).length === 0) {
+                showMsg('No valid order data processed.', 'yellow'); return;
+            }
+            displayResults(ordersData);
+        }
+
+        function displayResults(ordersData) {
+            resultsHeader.innerHTML = ''; resultsBody.innerHTML = ''; resultsFooter.innerHTML = '';
+            exportableData = [];
+
+            const baseHeaders = ['Sl.No', 'Order No', 'Order Date', 'Customer', 'Cust. GSTIN', 'Total Taxable'];
+            let slabHeaders = [];
+            gstSlabs.forEach(slab => { 
+                slabHeaders.push(`Taxable @${slab.totalRate}%`);
+                slabHeaders.push(`CGST ${slab.cgstRate}%`); 
+                slabHeaders.push(`INPUT CGST ${slab.cgstRate}% Amt`); 
+                slabHeaders.push(`SGST ${slab.sgstRate}%`);
+                slabHeaders.push(`INPUT SGST ${slab.sgstRate}% Amt`);
+                slabHeaders.push(`IGST ${slab.igstRate}%`);
+                slabHeaders.push(`INPUT IGST ${slab.igstRate}% Amt`);
+            });
+            const finalHeaders = ['Total GST Amt', 'Total Order Value'];
+            const allHeaders = [...baseHeaders, ...slabHeaders, ...finalHeaders];
+            exportableData.push(allHeaders);
+
+            allHeaders.forEach(hText => {
+                const th = document.createElement('th');
+                th.className = 'px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
+                th.textContent = hText;
+                resultsHeader.appendChild(th);
+            });
+
+            const fmt = (val) => (typeof val === 'number' ? val.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : (val == null ? '' : String(val)));
+            const fmtP = (val) => (typeof val === 'number' && val != undefined ? val.toFixed(1) + '%' : (val === 0 ? '0.0%' : '-'));
+            const rawNum = (val) => (typeof val === 'number' && !isNaN(val) ? val : 0);
+
+            let slNo = 1;
+            const grandTotals = { totalTaxable: 0, slabs: {}, totalGst: 0, totalOrderValue: 0 };
+            gstSlabs.forEach(slab => { grandTotals.slabs[slab.label] = { taxable: 0, cgstA: 0, sgstA: 0, igstA: 0 }; });
+
+            const sortedOrderKeys = Object.keys(ordersData).sort((keyA, keyB) => {
+                const dateA = ordersData[keyA].orderDateObj;
+                const dateB = ordersData[keyB].orderDateObj;
+                if (!dateA && !dateB) return 0; 
+                if (!dateA) return 1; 
+                if (!dateB) return -1;
+                return dateA.getTime() - dateB.getTime(); 
+            });
+
+            sortedOrderKeys.forEach(orderNo => {
+                const order = ordersData[orderNo];
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-gray-50';
+                const displayDate = order.orderDateObj ? order.orderDateObj.toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'}) : order.orderDateStr;
+
+                let rowHtml = `
+                    <td>${slNo}</td>
+                    <td>${orderNo}</td>
+                    <td>${displayDate}</td>
+                    <td>${fmt(order.customerName)}</td>
+                    <td>${fmt(order.customerGstin)}</td>
+                    <td class="text-right">${fmt(order.totalTaxableAmount)}</td>
+                `;
+                let exportRow = [slNo, orderNo, displayDate, fmt(order.customerName), fmt(order.customerGstin), rawNum(order.totalTaxableAmount)];
+
+                grandTotals.totalTaxable += rawNum(order.totalTaxableAmount);
+
+                gstSlabs.forEach(slab => {
+                    const slabData = order.slabs[slab.label];
+                    const displayCgstRate = slabData.cgstA > 0 || (slabData.igstA === 0 && slab.cgstRate > 0 && slabData.taxable > 0);
+                    const displaySgstRate = slabData.sgstA > 0 || (slabData.igstA === 0 && slab.sgstRate > 0 && slabData.taxable > 0);
+                    const displayIgstRate = slabData.igstA > 0 && slabData.taxable > 0;
+
+                    rowHtml += `<td class="text-right">${fmt(slabData.taxable)}</td>`;
+                    rowHtml += `<td class="text-right">${displayCgstRate ? fmtP(slab.cgstRate) : '-'}</td>`;
+                    rowHtml += `<td class="text-right">${fmt(slabData.cgstA)}</td>`;
+                    rowHtml += `<td class="text-right">${displaySgstRate ? fmtP(slab.sgstRate) : '-'}</td>`;
+                    rowHtml += `<td class="text-right">${fmt(slabData.sgstA)}</td>`;
+                    rowHtml += `<td class="text-right">${displayIgstRate ? fmtP(slab.igstRate) : '-'}</td>`;
+                    rowHtml += `<td class="text-right">${fmt(slabData.igstA)}</td>`;
+                    
+                    exportRow.push(rawNum(slabData.taxable));
+                    exportRow.push(displayCgstRate ? slab.cgstRate : '');
+                    exportRow.push(rawNum(slabData.cgstA));
+                    exportRow.push(displaySgstRate ? slab.sgstRate : '');
+                    exportRow.push(rawNum(slabData.sgstA));
+                    exportRow.push(displayIgstRate ? slab.igstRate : '');
+                    exportRow.push(rawNum(slabData.igstA));
+
+                    grandTotals.slabs[slab.label].taxable += rawNum(slabData.taxable);
+                    grandTotals.slabs[slab.label].cgstA += rawNum(slabData.cgstA);
+                    grandTotals.slabs[slab.label].sgstA += rawNum(slabData.sgstA);
+                    grandTotals.slabs[slab.label].igstA += rawNum(slabData.igstA);
+                });
+
+                const totalOrderValue = order.totalTaxableAmount + order.totalGstAmount;
+                rowHtml += `<td class="text-right">${fmt(order.totalGstAmount)}</td>`;
+                rowHtml += `<td class="text-right">${fmt(totalOrderValue)}</td>`;
+                tr.innerHTML = rowHtml;
+                resultsBody.appendChild(tr);
+
+                exportRow.push(rawNum(order.totalGstAmount));
+                exportRow.push(rawNum(totalOrderValue));
+                exportableData.push(exportRow);
+
+                grandTotals.totalGst += rawNum(order.totalGstAmount);
+                grandTotals.totalOrderValue += rawNum(totalOrderValue);
+                slNo++;
+            });
+
+            const footerRow = document.createElement('tr');
+            let footerHtml = `<td class="font-bold" colspan="5">Grand Total</td> <td class="text-right font-bold">${fmt(grandTotals.totalTaxable)}</td>`;
+            let exportFooterRow = ['', '', '', '', 'Grand Total', rawNum(grandTotals.totalTaxable)];
+
+            gstSlabs.forEach(slab => {
+                const gtSlab = grandTotals.slabs[slab.label];
+                footerHtml += `<td class="text-right font-bold">${fmt(gtSlab.taxable)}</td>`;
+                footerHtml += `<td class="font-bold">-</td>`; 
+                footerHtml += `<td class="text-right font-bold">${fmt(gtSlab.cgstA)}</td>`;
+                footerHtml += `<td class="font-bold">-</td>`;
+                footerHtml += `<td class="text-right font-bold">${fmt(gtSlab.sgstA)}</td>`;
+                footerHtml += `<td class="font-bold">-</td>`;
+                footerHtml += `<td class="text-right font-bold">${fmt(gtSlab.igstA)}</td>`;
+                exportFooterRow.push(rawNum(gtSlab.taxable), '', rawNum(gtSlab.cgstA), '', rawNum(gtSlab.sgstA), '', rawNum(gtSlab.igstA));
+            });
+            footerHtml += `<td class="text-right font-bold">${fmt(grandTotals.totalGst)}</td>`;
+            footerHtml += `<td class="text-right font-bold">${fmt(grandTotals.totalOrderValue)}</td>`;
+            footerRow.innerHTML = footerHtml;
+            resultsFooter.appendChild(footerRow);
+
+            exportFooterRow.push(rawNum(grandTotals.totalGst), rawNum(grandTotals.totalOrderValue));
+            exportableData.push(exportFooterRow);
+
+            resultsContainer.classList.remove('hidden');
+            downloadButton.classList.remove('hidden');
+            showMsg('Sales report generated!', 'green');
+        }
+
+        downloadButton.onclick = () => {
+            if (exportableData.length <= 1) { showMsg('No data to export.', 'yellow'); return; }
+            
+            const ws = XLSX.utils.aoa_to_sheet(exportableData);
+            const baseColCount = 6; 
+            const colsPerSlab = 7; 
+            
+            const colWidths = [ {wch:5}, {wch:12}, {wch:12}, {wch:25}, {wch:15}, {wch:14} ]; 
+            gstSlabs.forEach(() => { 
+                colWidths.push({wch:12}, {wch:8}, {wch:12}, {wch:8}, {wch:12}, {wch:8}, {wch:12});
+            });
+            colWidths.push({wch:14}, {wch:15}); 
+            ws['!cols'] = colWidths;
+
+            const allHeadersForExport = exportableData[0]; 
+
+            for (let R = 1; R < exportableData.length; ++R) { 
+                for (let C = 0; C < exportableData[R].length; ++C) {
+                    const cellValue = exportableData[R][C];
+                    if (typeof cellValue === 'number') {
+                        const cell_address = XLSX.utils.encode_cell({c:C, r:R});
+                        if(!ws[cell_address]) ws[cell_address] = {v: cellValue}; else ws[cell_address].v = cellValue;
+                        ws[cell_address].t = 'n';
+                        
+                        const headerText = allHeadersForExport[C] || "";
+                        const isRateColWithValue = headerText.includes('%') && !headerText.toLowerCase().includes('amt') && exportableData[R][C] !== '';
+
+                        if (isRateColWithValue) { 
+                             ws[cell_address].z = '0.0"%"'; 
+                        } else if (!headerText.includes('%') || headerText.toLowerCase().includes('amt')) { 
+                             ws[cell_address].z = '#,##0.00'; 
+                        } else {
+                             ws[cell_address].z = '0.00'; 
+                        }
+                    }
+                }
+            }
+            
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Sales GST Report"); 
+            try {
+                XLSX.writeFile(wb, "Sales_GST_Report_Slabwise_Sorted.xlsx"); 
+            } catch (e) {
+                showMsg('Error writing XLSX file. See console.', 'red');
+                console.error("XLSX Write Error:", e);
+            }
+        };
+    </script>
+</body>
+</html>
