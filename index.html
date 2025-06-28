@@ -299,11 +299,11 @@
             gstSlabs.forEach(slab => { 
                 slabHeaders.push(`Taxable @${slab.totalRate}%`);
                 slabHeaders.push(`CGST ${slab.cgstRate}%`); 
-                slabHeaders.push(`INPUT CGST ${slab.cgstRate}% Amt`); 
+                slabHeaders.push(`OUTPUT CGST ${slab.cgstRate}% Amt`); 
                 slabHeaders.push(`SGST ${slab.sgstRate}%`);
-                slabHeaders.push(`INPUT SGST ${slab.sgstRate}% Amt`);
+                slabHeaders.push(`OUTPUT SGST ${slab.sgstRate}% Amt`);
                 slabHeaders.push(`IGST ${slab.igstRate}%`);
-                slabHeaders.push(`INPUT IGST ${slab.igstRate}% Amt`);
+                slabHeaders.push(`OUTPUT IGST ${slab.igstRate}% Amt`);
             });
             const finalHeaders = ['Total GST Amt', 'Total Order Value'];
             const allHeaders = [...baseHeaders, ...slabHeaders, ...finalHeaders];
